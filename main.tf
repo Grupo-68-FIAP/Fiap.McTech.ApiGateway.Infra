@@ -13,7 +13,7 @@ resource "aws_api_gateway_vpc_link" "mctechapi_vpc_link" {
 
 
 resource "aws_api_gateway_rest_api" "restapi" {
-  name        = "rest-api"
+  name        = "MCTechApi"
   description = "API Gateway for MCTech API project"
 }
 
@@ -56,10 +56,17 @@ resource "aws_api_gateway_integration" "proxy_integration" {
 
 resource "aws_api_gateway_deployment" "mctechapi_deployment" {
   rest_api_id = aws_api_gateway_rest_api.restapi.id
-  stage_name  = "homolog"
+  stage_name  = "preprod"
 
   depends_on = [
     aws_api_gateway_integration.proxy_integration
   ]
+}
+
+resource "aws_api_gateway_method_response" "response" {
+  rest_api_id = aws_api_gateway_rest_api.restapi.id
+  resource_id = aws_api_gateway_resource.proxy.id
+  http_method = aws_api_gateway_method.proxy_method.http_method
+  status_code = "200"
 }
 
