@@ -1,88 +1,65 @@
-locals {
-  region  = "us-east-1"
-}
-
 # Configurações do AWS Provider
 provider "aws" {
-  region  = local.region
+  region = var.aws_region
 }
 
-resource "aws_apigatewayv2_api" "main" {
-  name          = "main"
-  protocol_type = "HTTP"
+resource "aws_api_gateway_vpc_link" "mctechapi_vpc_link" {
+  name        = "MCTech API VPC Link"
+  target_arns = [var.nlb_arn]  # ARN do NLB
+
+  # Use o ID da VPC
+  description = "VPC Link to MCTech API NLB"
 }
 
-resource "aws_apigatewayv2_stage" "dev" {
-  api_id = aws_apigatewayv2_api.main.id
 
-  name        = "dev"
-  auto_deploy = true
+resource "aws_api_gateway_rest_api" "restapi" {
+  name        = "rest-api"
+  description = "API Gateway for MCTech API project"
 }
 
-resource "aws_internet_gateway" "igw" {
-  vpc_id = data.aws_vpc.vpc.id
+resource "aws_api_gateway_resource" "proxy" {
+  rest_api_id = aws_api_gateway_rest_api.restapi.id
+  parent_id   = aws_api_gateway_rest_api.restapi.root_resource_id
+  path_part   = "{proxy+}"  # Capture todas as rotas dinâmicas
+}
 
-  tags = {
-    Name = "igw"
+resource "aws_api_gateway_method" "proxy_method" {
+  rest_api_id   = aws_api_gateway_rest_api.restapi.id
+  resource_id   = aws_api_gateway_resource.proxy.id
+  http_method   = "ANY"  # Aceita qualquer método (GET, POST, etc.)
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.proxy" = true
   }
 }
 
-resource "aws_subnet" "public-us-east-1a" {
-  vpc_id                  = data.aws_vpc.vpc.id
-  cidr_block              = "172.31.64.0/19"
-  availability_zone       = "us-east-1a"
-  map_public_ip_on_launch = true
+resource "aws_api_gateway_integration" "proxy_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.restapi.id
+  resource_id             = aws_api_gateway_resource.proxy.id
+  http_method             = aws_api_gateway_method.proxy_method.http_method
 
-  tags = {
-    "Name"                                      = "public-us-east-1a"
-    "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/MechTechApi"         = "owned"
+  integration_http_method = "ANY"
+  type                    = "HTTP_PROXY"
+  uri                     = "http://${var.nlb_dns_name}/{proxy}"  # Use o DNS do NLB aqui
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.mctechapi_vpc_link.id
+
+  request_parameters =  {
+    "integration.request.path.proxy" = "method.request.path.proxy"
   }
+
+  depends_on = [
+    aws_api_gateway_method.proxy_method
+  ]
 }
 
-resource "aws_subnet" "public-us-east-1b" {
-  vpc_id                  = data.aws_vpc.vpc.id
-  cidr_block              = "172.31.96.0/19"
-  availability_zone       = "us-east-1b"
-  map_public_ip_on_launch = true
+resource "aws_api_gateway_deployment" "mctechapi_deployment" {
+  rest_api_id = aws_api_gateway_rest_api.restapi.id
+  stage_name  = "homolog"
 
-  tags = {
-    "Name"                                      = "public-us-east-1b"
-    "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/MechTechApi"         = "owned"
-  }
+  depends_on = [
+    aws_api_gateway_integration.proxy_integration
+  ]
 }
 
-data "aws_security_group" "vpc_link" {
-  filter {
-    name   = "group-name"
-    values = ["SG-MechTechApi"]  # Substitua pelo nome do seu security group
-  }
-}
-
-resource "aws_apigatewayv2_vpc_link" "eks" {
-  name               = "eks"
-  security_group_ids = [data.aws_security_group.vpc_link.id]
-  subnet_ids = [aws_subnet.private-us-east-1a.id, aws_subnet.private-us-east-1b.id]
-}
-
-resource "aws_apigatewayv2_integration" "eks" {
-  api_id = aws_apigatewayv2_api.main.id
-
-  integration_uri    = "arn:aws:elasticloadbalancing:us-east-1:194801747815:listener/net/adea164640b304dda93321394e5df33c/8ca757409d032511/4b8e3ae677948d88"
-  integration_type   = "HTTP_PROXY"
-  integration_method = "ANY"
-  connection_type    = "VPC_LINK"
-  connection_id      = aws_apigatewayv2_vpc_link.eks.id
-}
-
-resource "aws_apigatewayv2_route" "get_products" {
-  api_id = aws_apigatewayv2_api.main.id
-
-  route_key = "GET /products"
-  target    = "integrations/${aws_apigatewayv2_integration.eks.id}"
-}
-
-output "get_products_url" {
-  value = "${aws_apigatewayv2_stage.dev.invoke_url}/api/product"
-}
